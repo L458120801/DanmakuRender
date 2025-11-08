@@ -45,6 +45,7 @@ class bilibili(BaseAPI):
 
     def get_stream_urls(self,
                         bili_watch_cookies=None,
+                        stream_bili_quality=20000,
                         **kwargs) -> dict:
         bili_watch_cookies = bili_watch_cookies or '.login_info/.bili_watch_cookies.json'
         watch_cookies = {}
@@ -72,7 +73,7 @@ class bilibili(BaseAPI):
             'protocol': '0,1',
             'format': '0,1,2',
             'codec': '0,1,2',   # 0:avc, 1:hevc, 2:av1
-            'qn': 20000,
+            'qn': stream_bili_quality,
             'ptype': 8,
             'dolby': 5,
             'panorama': 1
