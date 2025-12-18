@@ -34,6 +34,8 @@ HUYA_MP_BASE_URL = "https://mp.huya.com"
 HUYA_WUP_BASE_URL = "https://wup.huya.com"
 HUYA_WEB_ROOM_DATA_REGEX = r"var TT_ROOM_DATA = (.*?);"
 
+WUP_UA = "HYSDK(Windows,30000002)_APP(pc_exe&7030003&official)_SDK(trans&2.29.0.5493)"
+
 class huya(BaseAPI):
     headers = {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -253,9 +255,9 @@ class huya(BaseAPI):
         # sdkPcdn: 1_1 第一个1连接次数 第二个1是因为什么连接
         # t: 平台信息 100 web(ctype=huya_live/huya_webh5) 102 小程序(ctype=tars_mp)
         # PLATFORM_TYPE = {'adr': 2, 'huya_liveshareh5': 104, 'ios': 3, 'mini_app': 102, 'wap': 103, 'web': 100}
-        # sv: 2401090219 版本
+        # sv: 2.401090219e+09 版本
         # sdk_sid:  _sessionId sdkInRoomTs 当前毫秒时间
-        # return f"wsSecret={ws_secret}&wsTime={ws_time}&seqid={seq_id}&ctype={url_query['ctype'][0]}&ver=1&fs={url_query['fs'][0]}&u={convert_uid}&t={platform_id}&sv=2401090219&sdk_sid={int(time.time() * 1000)}&codec=264"
+        # return f"wsSecret={ws_secret}&wsTime={ws_time}&seqid={seq_id}&ctype={url_query['ctype'][0]}&ver=1&fs={url_query['fs'][0]}&u={convert_uid}&t={platform_id}&sv=2.401090219e+09&sdk_sid={int(time.time() * 1000)}&codec=264"
         anti_code = {
             "wsSecret": ws_secret,
             "wsTime": ws_time,
@@ -280,7 +282,7 @@ class huya(BaseAPI):
                     return anchor_uid
         except IndexError:
             pass
-        return random.randint(1400000000000, 1499999999999)
+        return random.randint(1.4e+12, 1.499999999999e+12)
 
     def get_stream_urls(self, stream_type=None, stream_codec=None, huya_mobile_api=False, **kwargs) -> str:
         room_profile = self.get_room_profile(use_api=huya_mobile_api)
@@ -329,13 +331,13 @@ class huya(BaseAPI):
             return random.choice(selected_urls)
         
     def get_stream_header(self) -> dict:
-        return self.headers
+        return {"User-Agent": WUP_UA}
     
     def update_headers(self, headers: dict):
-        user_agent = UAGenerator.build_user_agent(UAType.HYSDK, Platform.WINDOWS)
-        # user_agent = f"{Huya.get_hysdk_ua()}_APP({Huya.get_hyapp_ua()})_SDK({Huya.get_hy_trans_mod_ua()})"
-        self.headers['user-agent'] = user_agent
-        self.headers['origin'] = HUYA_WEB_BASE_URL
+        headers['User-Agent'] = WUP_UA
+        headers['Origin'] = HUYA_WEB_BASE_URL
+        headers['Referer'] = HUYA_WEB_BASE_URL
+
 
     @staticmethod
     def get_uid(uid = None) -> int:
@@ -344,7 +346,7 @@ class huya(BaseAPI):
                 uid = int(uid)
         except ValueError:
             pass
-        return uid or random.randint(1400000000000, 1499999999999)
+        return uid or random.randint(1.4e+12, 1.499999999999e+12)
 
 
 class UAType(Enum):
@@ -377,7 +379,7 @@ class UAGenerator:
         },
         Platform.WEBSOCKET: { # UnUsed
             'platform': Platform.WEBSOCKET,
-            'version': '2505091506',
+            'version': '2.505091506e+09',
             'channel': 'websocket'
         }
     }
