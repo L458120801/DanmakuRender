@@ -208,7 +208,11 @@ class StreamDownloadTask():
             width, height = default_resolution
         
         self.width,self.height = width, height
-
+        
+        if this_engine == 'streamlink' and self.plat == 'bilibili':
+            self.advanced_video_args['streamlink_extra_args'] = ['--http-cookie', 'DedeUserID=1']
+            # self.logger.info(f"检测到 Bilibili 平台使用 Streamlink，已添加额外参数 {self.advanced_video_args['streamlink_extra_args']}.")     
+        
         self.downloader = None
         self.dmw = None
 
