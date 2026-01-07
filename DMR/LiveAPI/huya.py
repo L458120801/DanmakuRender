@@ -5,7 +5,7 @@ import requests
 import re
 import base64
 from lxml import etree
-from urllib.parse import parse_qs, unquote
+from urllib.parse import parse_qs, unquote, quote
 import urllib.parse
 import hashlib
 import time
@@ -19,9 +19,10 @@ except ImportError:
 from DMR.utils import random_user_agent, multi_unescape
 from .huya_wup import Wup, DEFAULT_TICKET_NUMBER
 from .huya_wup.packet import (
-    HuyaGetCdnTokenReq,
-    HuyaGetCdnTokenRsp
+    HuyaGetCdnTokenExReq,
+    HuyaGetCdnTokenExRsp,
 )
+from .huya_wup.wup_struct.UserId import HuyaUserId
 
 
 logger = logging.getLogger(__name__)
@@ -32,9 +33,11 @@ HUYA_WEB_BASE_URL = "https://www.huya.com"
 HUYA_MOBILE_BASE_URL = "https://m.huya.com"
 HUYA_MP_BASE_URL = "https://mp.huya.com"
 HUYA_WUP_BASE_URL = "https://wup.huya.com"
+HUYA_WUP_YST_URL = "https://snmhuya.yst.aisee.tv"
 HUYA_WEB_ROOM_DATA_REGEX = r"var TT_ROOM_DATA = (.*?);"
 
 WUP_UA = "HYSDK(Windows,30000002)_APP(pc_exe&7030003&official)_SDK(trans&2.29.0.5493)"
+rotl64 = lambda t: ((t & 0xFFFFFFFF) << 8 | (t & 0xFFFFFFFF) >> 24) & 0xFFFFFFFF | (t & ~0xFFFFFFFF)
 
 class huya(BaseAPI):
     headers = {
@@ -190,43 +193,34 @@ class huya(BaseAPI):
             cover_url = None
         return title, uname, face_url, cover_url
 
-    def get_true_anticode(
-        self,
-        cdn: str,
-        stream_name: str,
-        presenter_uid: int,
-        proto: str,
-    ) -> str:
+    def get_cdn_token_info_ex(self, stream_name: str) -> str:
         '''
-        获取 wup anti_code
-        :param cdn: cdn类型
+        获取 wup anti_code (getCdnTokenInfoEx)
         :param stream_name: 流名称
-        :param presenter_uid: 主播uid
-        :param proto: 协议类型
         :return: wup anti_code
         '''
-        proto = "hls" if proto == "Hls" else "flv"
-        headers = {}
-        self.update_headers(headers)
+        tid = HuyaUserId()
+        tid.sHuYaUA = UAGenerator.get_random_hyapp_ua()
         wup_req = Wup()
         wup_req.requestid = abs(DEFAULT_TICKET_NUMBER)
         wup_req.servant = "liveui"
-        wup_req.func = "getCdnTokenInfo"
-        token_info_req = HuyaGetCdnTokenReq()
-        token_info_req.cdnType = cdn
-        token_info_req.streamName = stream_name
-        token_info_req.presenterUid = presenter_uid
-        wup_req.put(HuyaGetCdnTokenReq, "tReq", token_info_req)
+        wup_req.func = "getCdnTokenInfoEx"
+        token_info_req = HuyaGetCdnTokenExReq()
+        token_info_req.sStreamName = stream_name
+        token_info_req.tId = tid
+        wup_req.put(HuyaGetCdnTokenExReq, "tReq", token_info_req)
         data = wup_req.encode_v3()
-        rsp = self.sess.post(HUYA_WUP_BASE_URL, data=data, headers=headers)
+        url = HUYA_WUP_BASE_URL
+        if random.random() > 0.5:
+            url = f"{HUYA_WUP_YST_URL}/{wup_req.servant}/{wup_req.func}"
+        rsp = self.sess.post(url, data=data)
         wup_rsp = Wup()
         wup_rsp.decode_v3(rsp.content)
-        token_info_rsp = wup_rsp.get(HuyaGetCdnTokenRsp,"tRsp")
-        # print(token_info_rsp.as_dict())
+        token_info_rsp = wup_rsp.get(HuyaGetCdnTokenExRsp, "tRsp")
         token_info = token_info_rsp.as_dict()
-        return token_info[f'{proto}AntiCode']
+        return token_info['sFlvToken']
     
-    def build_query(self, stream_name, anti_code, uid: int) -> str:
+    def build_anticode(self, stream_name: str, anti_code: str, uid: int) -> str:
         '''
         构建anti_code
         :param stream_name: 流名称
@@ -235,42 +229,52 @@ class huya(BaseAPI):
         :return: 构建后的anti_code
         '''
         url_query = parse_qs(anti_code)
-        platform_id = url_query.get('t', [100])[0]
-        ws_time = url_query['wsTime'][0]
-        convert_uid = (uid << 8 | uid >> (32 - 8)) & 0xFFFFFFFF
-        seq_id = uid + int(time.time() * 1000)
-        ctype = url_query['ctype'][0]
+        if not url_query.get("fm"):
+            return anti_code
+
+        ctype = url_query.get('ctype', [''])[0]
+        platform_id = url_query.get('t', ['100'])[0]
+        platform_id = int(platform_id) if str(platform_id).isdigit() else 100
+        is_wap = platform_id in {103}
+        calc_start_time = time.time()
+
+        uid = self.get_uid(uid)
+        seq_id = uid + int(calc_start_time * 1000)
+        secret_hash = hashlib.md5(f"{seq_id}|{ctype}|{platform_id}".encode()).hexdigest()
+        convert_uid = rotl64(uid)
+        calc_uid = uid if is_wap else convert_uid
+
         fm = unquote(url_query['fm'][0])
-        ct = int((int(ws_time, 16) + random.random()) * 1000)
-        ws_secret_prefix = base64.b64decode(fm.encode()).decode().split('_')[0]
-        ws_secret_hash = hashlib.md5(f"{seq_id}|{ctype}|{platform_id}".encode()).hexdigest()
-        secret_str = f'{ws_secret_prefix}_{convert_uid}_{stream_name}_{ws_secret_hash}_{ws_time}'
+        secret_prefix = base64.b64decode(fm.encode()).decode().split('_')[0]
+
+        ws_time = url_query['wsTime'][0]
+        if int(ws_time, 16) - int(calc_start_time) < (20 * 60):
+            ws_time = hex(24 * 60 * 60 + int(calc_start_time))[2:]
+        secret_str = f'{secret_prefix}_{calc_uid}_{stream_name}_{secret_hash}_{ws_time}'
         ws_secret = hashlib.md5(secret_str.encode()).hexdigest()
 
-        # &codec=av1
-        # &codec=264
-        # &codec=265
-        # dMod: wcs-25 / mesh-0 DecodeMod-SupportMod
-        # chrome > 104 or safari = mseh, chrome = mses
-        # sdkPcdn: 1_1 第一个1连接次数 第二个1是因为什么连接
-        # t: 平台信息 100 web(ctype=huya_live/huya_webh5) 102 小程序(ctype=tars_mp)
-        # PLATFORM_TYPE = {'adr': 2, 'huya_liveshareh5': 104, 'ios': 3, 'mini_app': 102, 'wap': 103, 'web': 100}
-        # sv: 2.401090219e+09 版本
-        # sdk_sid:  _sessionId sdkInRoomTs 当前毫秒时间
-        # return f"wsSecret={ws_secret}&wsTime={ws_time}&seqid={seq_id}&ctype={url_query['ctype'][0]}&ver=1&fs={url_query['fs'][0]}&u={convert_uid}&t={platform_id}&sv=2.401090219e+09&sdk_sid={int(time.time() * 1000)}&codec=264"
+        ct = int((int(ws_time, 16) + random.random()) * 1000)
+        uuid = str(int((ct % 1e10 + random.random()) * 1e3 % 0xffffffff))
+
         anti_code = {
             "wsSecret": ws_secret,
             "wsTime": ws_time,
-            "seqid": str(seq_id),
+            "seqid": seq_id,
             "ctype": ctype,
             "ver": "1",
             "fs": url_query['fs'][0],
+            "fm": quote(url_query['fm'][0], encoding='utf-8'),
             "t": platform_id,
-            "u": convert_uid,
-            "uuid": str(int((ct % 1e10 + random.random()) * 1e3 % 0xffffffff)),
-            "sdk_sid": str(int(time.time() * 1000)),
-            # "codec": self.huya_codec,
         }
+        if is_wap:
+            anti_code.update({
+                "uid": uid,
+                "uuid": uuid,
+            })
+        else:
+            anti_code.update({
+                "u": convert_uid,
+            })
         return '&'.join([f"{k}={v}" for k, v in anti_code.items()])
 
     @staticmethod
@@ -282,17 +286,17 @@ class huya(BaseAPI):
                     return anchor_uid
         except IndexError:
             pass
-        return random.randint(1.4e+12, 1.499999999999e+12)
+        return random.randint(1400000000000, 1499999999999)
 
     def get_stream_urls(self, stream_type=None, stream_codec=None, huya_mobile_api=False, **kwargs) -> str:
         room_profile = self.get_room_profile(use_api=huya_mobile_api)
-        is_xingxiu = (room_profile['gid'] == 1663)
         streams_info = room_profile['streams_info']
 
         proto = 'Hls' if stream_type == 'hls' else 'Flv'
         codec = stream_codec or '264'
 
         urls = []
+        cached_anticode = ""
         for stream in streams_info:
             # 优先级<0代表不可用
             priority = stream['iWebPriorityRate']
@@ -301,11 +305,15 @@ class huya(BaseAPI):
             stream_name = stream['sStreamName']
             cdn = stream['sCdnType'].lower()
             suffix = stream[f's{proto}UrlSuffix']
-            anti_code = stream[f's{proto}AntiCode']
-            anti_code = self.get_true_anticode(cdn, stream_name, self.get_uid(stream['lPresenterUid']), proto)
-            anti_code = anti_code + f"&codec={codec}"
+            if not cached_anticode:
+                cached_anticode = self.build_anticode(
+                    stream_name,
+                    self.get_cdn_token_info_ex(stream_name),
+                    stream['lPresenterUid'],
+                )
+                cached_anticode = cached_anticode + f"&codec={codec}"
             base_url = stream[f's{proto}Url'].replace('http://', 'https://')
-            uri = f"{base_url}/{stream_name}.{suffix}?{anti_code}"
+            uri = f"{base_url}/{stream_name}.{suffix}?{cached_anticode}"
             urls.append({
                 'stream_cdn': cdn,
                 'stream_type': stream_type,
@@ -346,7 +354,7 @@ class huya(BaseAPI):
                 uid = int(uid)
         except ValueError:
             pass
-        return uid or random.randint(1.4e+12, 1.499999999999e+12)
+        return uid or random.randint(1400000000000, 1499999999999)
 
 
 class UAType(Enum):
@@ -379,7 +387,7 @@ class UAGenerator:
         },
         Platform.WEBSOCKET: { # UnUsed
             'platform': Platform.WEBSOCKET,
-            'version': '2.505091506e+09',
+            'version': '2505091506',
             'channel': 'websocket'
         }
     }
@@ -506,6 +514,11 @@ class UAGenerator:
 
         else:
             raise ValueError(f"不支持的 UA 类型: {ua_type}")
+
+    @staticmethod
+    def get_random_hyapp_ua() -> str:
+        platform = random.choice(list(UAGenerator.HYAPP_CONFIGS.keys()))
+        return UAGenerator.get_hyapp_ua(platform)
 
 
 def _raise_for_room_block(text: str):
