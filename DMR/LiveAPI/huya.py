@@ -286,7 +286,7 @@ class huya(BaseAPI):
                     return anchor_uid
         except IndexError:
             pass
-        return random.randint(1.4e+12, 1.499999999999e+12)
+        return random.randint(1400000000000, 1499999999999)
 
     def get_stream_urls(self, stream_type=None, stream_codec=None, huya_mobile_api=False, **kwargs) -> str:
         room_profile = self.get_room_profile(use_api=huya_mobile_api)
@@ -354,7 +354,7 @@ class huya(BaseAPI):
                 uid = int(uid)
         except ValueError:
             pass
-        return uid or random.randint(1.4e+12, 1.499999999999e+12)
+        return uid or random.randint(1400000000000, 1499999999999)
 
 
 class UAType(Enum):
@@ -387,7 +387,7 @@ class UAGenerator:
         },
         Platform.WEBSOCKET: { # UnUsed
             'platform': Platform.WEBSOCKET,
-            'version': '2.505091506e+09',
+            'version': '2505091506',
             'channel': 'websocket'
         }
     }
