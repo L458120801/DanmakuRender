@@ -10,6 +10,7 @@ import urllib.parse
 import hashlib
 import time
 import logging
+from typing import Union
 
 try:
     from .BaseAPI import BaseAPI
@@ -28,6 +29,7 @@ from .huya_wup.wup_struct.UserId import HuyaUserId
 logger = logging.getLogger(__name__)
 
 # 2025.9.3 改用了 https://github.com/biliup/biliup/blob/master/biliup/plugins/huya.py 实现
+# 2026.1.7 改用了 https://github.com/biliup/biliup/blob/master/biliup/plugins/huya.py 实现
 
 HUYA_WEB_BASE_URL = "https://www.huya.com"
 HUYA_MOBILE_BASE_URL = "https://m.huya.com"
@@ -213,14 +215,22 @@ class huya(BaseAPI):
         url = HUYA_WUP_BASE_URL
         if random.random() > 0.5:
             url = f"{HUYA_WUP_YST_URL}/{wup_req.servant}/{wup_req.func}"
-        rsp = self.sess.post(url, data=data)
+        headers = {}
+        self.update_headers(headers)
+        rsp = self.sess.post(url, data=data, headers=headers)
         wup_rsp = Wup()
         wup_rsp.decode_v3(rsp.content)
         token_info_rsp = wup_rsp.get(HuyaGetCdnTokenExRsp, "tRsp")
         token_info = token_info_rsp.as_dict()
         return token_info['sFlvToken']
     
-    def build_anticode(self, stream_name: str, anti_code: str, uid: int) -> str:
+    def build_anticode(
+        self,
+        stream_name: str,
+        anti_code: str,
+        uid: Union[str, int] = 0,
+        random_platform: bool = False,
+    ) -> str:
         '''
         构建anti_code
         :param stream_name: 流名称
@@ -232,13 +242,24 @@ class huya(BaseAPI):
         if not url_query.get("fm"):
             return anti_code
 
-        ctype = url_query.get('ctype', [''])[0]
-        platform_id = url_query.get('t', ['100'])[0]
-        platform_id = int(platform_id) if str(platform_id).isdigit() else 100
-        is_wap = platform_id in {103}
+        ctype = url_query.get('ctype', [])
+        platform_id = url_query.get('t', [])
+        if len(ctype) == 0 or random_platform:
+            ctype, platform_id = PLATFORM.get_random_as_tuple()
+        elif len(platform_id) == 0:
+            ctype = ctype[0]
+            platform_id = PLATFORM.get_platform_id(ctype)
+        else:
+            ctype = ctype[0]
+            platform_id = platform_id[0]
+
+        is_wap = int(platform_id) in {103}
         calc_start_time = time.time()
 
-        uid = self.get_uid(uid)
+        if isinstance(uid, str):
+            uid = int(uid) if uid.isdigit() else 0
+        if uid == 0:
+            uid = self.generate_random_uid()
         seq_id = uid + int(calc_start_time * 1000)
         secret_hash = hashlib.md5(f"{seq_id}|{ctype}|{platform_id}".encode()).hexdigest()
         convert_uid = rotl64(uid)
@@ -278,15 +299,10 @@ class huya(BaseAPI):
         return '&'.join([f"{k}={v}" for k, v in anti_code.items()])
 
     @staticmethod
-    def __get_uid(stream_name: str) -> int:
-        try:
-            if stream_name:
-                anchor_uid = int(stream_name.split('-')[0])
-                if anchor_uid > 0:
-                    return anchor_uid
-        except IndexError:
-            pass
-        return random.randint(1400000000000, 1499999999999)
+    def generate_random_uid() -> int:
+        return int(f"1234{random.randint(0, 9999):04d}") \
+            if random.random() > 0.5 else \
+            int(f"140000{random.randint(0, 9999999):07d}")
 
     def get_stream_urls(self, stream_type=None, stream_codec=None, huya_mobile_api=False, **kwargs) -> str:
         room_profile = self.get_room_profile(use_api=huya_mobile_api)
@@ -347,178 +363,86 @@ class huya(BaseAPI):
         headers['Referer'] = HUYA_WEB_BASE_URL
 
 
-    @staticmethod
-    def get_uid(uid = None) -> int:
-        try:
-            if isinstance(uid, str):
-                uid = int(uid)
-        except ValueError:
-            pass
-        return uid or random.randint(1400000000000, 1499999999999)
 
 
-class UAType(Enum):
-    MEDIA_PLAYER = 'media_player'
-    HYSDK = 'hysdk'
+class PLATFORM(Enum):
+    HUYA_PC_EXE = 0
+    HUYA_ADR = 2
+    HUYA_IOS = 3
+    TV_HUYA_NFTV = 10
+    HUYA_WEBH5 = 100
+    HUYA_LIVE = 100
+    TARS_MP = 102
+    TARS_MOBILE = 103
+    HUYA_LIVESHAREH5 = 104
 
-class Platform(Enum):
-    ANDROID = 'adr'
-    HUYA_NFTV = 'huya_nftv'
-    WEBSOCKET = 'webh5'
-    WINDOWS = 'pc_exe'
+    @classmethod
+    def get_random_as_tuple(cls):
+        _ = random.choice(list(cls))
+        return _.name.lower(), _.value
+
+    @classmethod
+    def get_platform_id(cls, platform: str) -> int:
+        return cls[platform.upper()].value if platform.upper() in cls.__members__ else 100
+
+    @property
+    def short_name(self) -> str:
+        name = self.name.lower()
+        idx = name.find('_')
+        return name[idx + 1:] if idx != -1 else name
 
 class UAGenerator:
-    # 配置字典
+    # Configuration dictionary mapping PLATFORM enum to UA components
     HYAPP_CONFIGS = {
-        Platform.ANDROID: {
-            'platform': Platform.ANDROID,
-            'version': '0.0.0',  # LocalVersion or "0.0.0" + hotfix_version
-            'channel': 'live'
+        PLATFORM.HUYA_ADR: {
+            'version': '13.1.0',
         },
-        Platform.HUYA_NFTV: {
-            'platform': Platform.HUYA_NFTV,
-            'version': '2.5.1.3141',
-            'channel': 'official'
+        PLATFORM.HUYA_IOS: {
+            'version': '13.1.0',
         },
-        Platform.WINDOWS: {
-            'platform': Platform.WINDOWS,
-            'version': '6100301',
-            'channel': 'official'
+        PLATFORM.TV_HUYA_NFTV: {
+            'version': '2.6.10',
         },
-        Platform.WEBSOCKET: { # UnUsed
-            'platform': Platform.WEBSOCKET,
-            'version': '2505091506',
-            'channel': 'websocket'
-        }
-    }
-
-    HYSDK_CONFIGS = {
-        Platform.ANDROID: {
-            'platform': 'Android',
-            'version': '30000002'
+        PLATFORM.HUYA_PC_EXE: {
+            'version': '7000000',
         },
-        Platform.WINDOWS: {
-            'platform': 'Windows',
-            'version': '30000002'
-        }
-    }
-
-    TRANS_MOD_CONFIGS = {
-        Platform.HUYA_NFTV: {
-            'name': 'trans',
-            'version': '1.24.99-rel-tv'
-        },
-        Platform.ANDROID: {
-            'name': 'trans',
-            'version': '2.22.13-rel'
-        },
-        Platform.WINDOWS: {
-            'name': 'trans',
-            'version': '2.24.0.5157'
-        }
+        # PLATFORM.HUYA_WEBH5: {       # 星秀区不可用
+        #     'version': '%y%m%d%H%M', # 2410101630
+        #     'channel': 'websocket'
+        # }
     }
 
     @staticmethod
-    def get_hyapp_ua(platform: Platform = Platform.WINDOWS) -> str:
+    def generate_hyapp_ua(platform: PLATFORM) -> str:
         '''
-        生成 hyapp 用户代理字符串
-        :param platform: 平台类型
-        :return: 用户代理字符串
+        Generate hyapp user agent string
+        :param platform: Platform type from PLATFORM enum
+        :return: User agent string
         '''
         config = UAGenerator.HYAPP_CONFIGS.get(platform)
         if not config:
-            raise ValueError(f"不支持的平台: {platform}")
+            platform = random.choice(list(UAGenerator.HYAPP_CONFIGS.keys()))
+            config = UAGenerator.HYAPP_CONFIGS[platform]
 
-        hyapp_platform = config['platform']
-        hyapp_version = config['version']
-        hyapp_channel = config['channel']
+        hyapp_platform = platform.short_name
+        hyapp_version = config.get("version", "0.0.0")
+        hyapp_channel = config.get("channel", "official")
+
+        if platform in {PLATFORM.HUYA_ADR, PLATFORM.TV_HUYA_NFTV}:
+            hyapp_version += f".{random.randint(3000, 5000)}"
 
         ua = f"{hyapp_platform}&{hyapp_version}&{hyapp_channel}"
-        # windows 和 websocket 不需要添加 android_api_level
-        if platform not in {Platform.WINDOWS, Platform.WEBSOCKET}:
-            android_api_level = random.randint(28, 35)
+
+        if platform in {PLATFORM.HUYA_ADR, PLATFORM.TV_HUYA_NFTV}:
+            android_api_level = random.randint(28, 36)
             ua = f"{ua}&{android_api_level}"
 
         return ua
 
     @staticmethod
-    def get_hysdk_ua(platform: Platform = Platform.WINDOWS) -> str:
-        '''
-        生成 hysdk 用户代理字符串
-        :param platform: 平台类型 (Android 或 Windows)
-        :return: 用户代理字符串
-        '''
-        config = UAGenerator.HYSDK_CONFIGS.get(platform)
-        if not config:
-            raise ValueError(f"HYSDK 不支持的平台: {platform}")
-
-        hysdk_platform = config['platform']
-        hysdk_version = config['version']
-
-        return f"HYSDK({hysdk_platform}, {hysdk_version})"
-
-    @staticmethod
-    def get_hy_media_player_ua(platform: Platform = Platform.WINDOWS) -> str:
-        '''
-        生成 hy_media_player 用户代理字符串
-        :param platform: 平台类型
-        :return: 用户代理字符串
-        '''
-        # 目前只支持 android 平台
-        hy_mp_platform = 'android'
-        hy_mp_version = '20000313'
-
-        return f"{hy_mp_platform}, {hy_mp_version}"
-
-    @staticmethod
-    def get_hy_trans_mod_ua(platform: Platform = Platform.WINDOWS) -> str:
-        '''
-        生成 hy_trans_mod 用户代理字符串
-        :param platform: 平台类型
-        :return: 用户代理字符串
-        '''
-        config = UAGenerator.TRANS_MOD_CONFIGS.get(platform)
-        if not config:
-            raise ValueError(f"Trans mod 不支持的平台: {platform}")
-
-        hy_trans_mod_name = config['name']
-        hy_trans_mod_version = config['version']
-
-        return f"{hy_trans_mod_name}&{hy_trans_mod_version}"
-
-    @staticmethod
-    def build_user_agent(
-        ua_type: UAType = UAType.HYSDK,
-        platform: Platform = Platform.WINDOWS
-    ) -> str:
-        '''
-        构建完整的用户代理字符串
-        :param ua_type: UA 类型 (MEDIA_PLAYER 或 HYSDK)
-        :param platform: 平台类型
-        :return: 完整的用户代理字符串
-        '''
-
-        # 获取各个组件的 UA
-        hyapp_ua = UAGenerator.get_hyapp_ua(platform)
-
-        trans_mod_ua = UAGenerator.get_hy_trans_mod_ua(platform)
-
-        if ua_type == UAType.MEDIA_PLAYER:
-            media_player_ua = UAGenerator.get_hy_media_player_ua(platform)
-            return f"{media_player_ua}_APP({hyapp_ua})_SDK({trans_mod_ua})"
-
-        elif ua_type == UAType.HYSDK:
-            sdk_platform = platform if platform in {Platform.ANDROID, Platform.HUYA_NFTV} else Platform.WINDOWS
-            hysdk_ua = UAGenerator.get_hysdk_ua(sdk_platform)
-            return f"{hysdk_ua}_APP({hyapp_ua})_SDK({trans_mod_ua})"
-
-        else:
-            raise ValueError(f"不支持的 UA 类型: {ua_type}")
-
-    @staticmethod
     def get_random_hyapp_ua() -> str:
-        platform = random.choice(list(UAGenerator.HYAPP_CONFIGS.keys()))
-        return UAGenerator.get_hyapp_ua(platform)
+        random_platform = random.choice(list(PLATFORM))
+        return UAGenerator.generate_hyapp_ua(random_platform)
 
 
 def _raise_for_room_block(text: str):
