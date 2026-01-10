@@ -54,6 +54,7 @@ class Bilibili(DMAPI):
             "key": token, 
             "type":2, 
             "platform": "web",
+            "buvid": current_cookie.split('buvid3=')[1].split(';')[0],
         },separators=(",", ":"),).encode("ascii")
         data = (
             pack(">i", len(data) + 16)
