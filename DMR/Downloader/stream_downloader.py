@@ -252,7 +252,10 @@ class StreamDownloadTask():
         while not self.stoped:
             try:
                 for future in as_completed(futures, timeout=60):
-                    return future.result()
+                    try:
+                        return future.result()
+                    except TimeoutError as e:           # 捕获内部的超时，避免死循环
+                        raise RuntimeError(f'{self.taskname} 录制异常退出: {e}') from e
             except TimeoutError:
                 if self.liveapi.Onair() == False:
                     self.logger.debug('LIVE END.')
